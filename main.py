@@ -5,68 +5,49 @@
 # import sys
 # sys.path.append("C:\\ProgramData\\Blackmagic Design\\DaVinci Resolve\\Support\\Developer\\Scripting\\Modules\\")
 
-# 一般 => 外部スクリプトに使用
+import lib
 
-import DaVinciResolveScript as dvr_script
+import time
 import os
+import sys
+from watchdog.observers import Observer
+from watchdog.events import LoggingEventHandler
+from watchdog.events import FileSystemEventHandler
 
-resolve = dvr_script.scriptapp("Resolve")
-project = resolve.GetProjectManager().GetCurrentProject()
+class FileEventHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        filePath = event.src_path
+        # FIXME: watchdog が追加を検知した瞬間には DaVinci Resolve に追加できないっぽい？
+        # voiceroid 側で区切り文字を設定して複数ファイルを同時に書き出した場合、
+        # 瞬間的にのみ作られるファイルの可能性がある。なのでちょっと待ってから存在をチェック
+        time.sleep(0.1)
+        if os.path.exists(filePath) and os.path.splitext(filePath)[1] == ".wav":
+            print("add " + filePath)
+            addedClips = lib.addToVoiceFolder(filePath)
+            addedItems = lib.addToTimeline(addedClips)
+            correspondingTxtFilePath = os.path.splitext(filePath)[0] + ".txt"
+            if os.path.exists(correspondingTxtFilePath):
+                with open(correspondingTxtFilePath, mode="r", encoding="cp932") as txtFile:
+                    txt = txtFile.read()
+                    for item in addedItems:
+                        lib.writeTextToTextPlus(lib.insertTextPlusToTrack(2, item.GetStart()), txt)
 
-# ボイス保存用ビン。もしサブフォルダなどを指定したければ "a/b/c" のように "/" で区切る。
-VOICE_FOLDER = "voice"
+    # FIXME: 他のイベントも見たほうがよいだろうか？
 
-# パスを受け取ったフォルダを返す。見つからなかったら None
-# 主な用途は "voice" を渡して声用フォルダを取得。
-def relativeFolder(mediaPool, path):
-    root = mediaPool.GetRootFolder()
-    cur = root
-    path = path.split("/")
-    while len(path) != 0:
-        for sub in cur.GetSubFolderList():
-            if sub.GetName() == path[0]:
-                path = path[1:]
-                cur = sub
-                break
-        else:
-            return None
-    return cur
+if len(sys.argv) != 2:
+    print("Usage: python main.py directory-to-watch")
+    exit(1)
 
-# パスがなかったら作る用
-def createFolder(mediaPool, path):
-    root = mediaPool.GetRootFolder()
-    cur = root
-    path = path.split("/")
-    while len(path) != 0:
-        for sub in cur.GetSubFolderList():
-            if sub.GetName() == path[0]:
-                path = path[1:]
-                cur = sub
-                break
-        else:
-            cur = mediaPool.AddSubFolder(cur, path[0])
-            path = path[1:]
-    return cur
+directoryToWatch = sys.argv[1]
+# event_handler = LoggingEventHandler()
+event_handler = FileEventHandler()
 
-def voiceFolder(mediaPool):
-    return relativeFolder(mediaPool, VOICE_FOLDER)
-
-def createVoiceFolder(mediaPool):
-    return createFolder(mediaPool, VOICE_FOLDER)
-
-def addToVoiceFolder(mediaPool, files):
-    # 後で戻す用
-    prev = mediaPool.GetCurrentFolder()
-    # ボイス用フォルダを開く、なかったら作る。
-    voice = voiceFolder(mediaPool)
-    if voice == None:
-        voice = createVoiceFolder(mediaPool)
-    mediaPool.SetCurrentFolder(voice)
-
-    # FIXME: いい感じに re-link とかしたほうがよい？
-    mediaPool.ImportMedia(files)
-
-    # 元のフォルダに戻す。
-    mediaPool.SetCurrentFolder(prev)
-
-# addToVoiceFolder(project.GetMediaPool(), "C:\\Users\\tomoki\\Videos\\gopro\\nagoya\\voice\\1-0.wav")
+observer = Observer()
+observer.schedule(event_handler, directoryToWatch, recursive=True)
+observer.start()
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    observer.stop()
+observer.join()
